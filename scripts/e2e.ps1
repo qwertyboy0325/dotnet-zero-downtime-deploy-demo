@@ -36,8 +36,8 @@ try {
     $env:PUBLISH_ARGS = $null
     if ($brokenExit -eq 0) { Fail '壞掉的版本居然部署成功' }
     if ((Get-Content "$D\run\current").Trim() -ne 'v2') { Fail '目前版本應維持 v2' }
-    # Invoke-RestMethod 會把整個 JSON 陣列當成一個物件丟進 pipeline，所以先存成變數再用 .Where 篩選
-    $status = @(Invoke-RestMethod "$LB/lb/status")
+    # Invoke-RestMethod 會把整個 JSON 陣列當成「一個」物件輸出；直接指派才拿得到陣列本身（包 @() 會變成一層巢狀）
+    $status = Invoke-RestMethod "$LB/lb/status"
     if (@($status.Where({ $_.state -eq 'enabled' })).Count -ne 2) { $status | Format-Table | Out-Host; Fail '兩台都應在 LB 上' }
     if (-not (Invoke-RestMethod "$LB/").StartsWith('v2')) { Fail '回滾後應由 v2 回應' }
 
