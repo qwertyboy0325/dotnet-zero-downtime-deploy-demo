@@ -1,0 +1,10 @@
+bin/
+obj/
+releases/
+build/
+run/
+logs/
+.vs/
+.idea/
+*.user
+.DS_Store

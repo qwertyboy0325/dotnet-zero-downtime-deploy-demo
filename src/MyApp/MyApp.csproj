@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 版本號編譯進 DLL，部署時用 -p:InformationalVersion=v2 覆寫 -->
+    <InformationalVersion>v1</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+  </PropertyGroup>
+</Project>
