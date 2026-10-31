@@ -35,3 +35,4 @@ foreach ($s in $Slots) {
 Set-Content "$D\run\current" $Version
 Log "部署完成：目前版本 $Version"
 Invoke-RestMethod "$LB/lb/status" | Format-Table
+exit 0  # 明確回傳成功；否則 $LASTEXITCODE 會殘留上一個原生指令的值
