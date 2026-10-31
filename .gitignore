@@ -8,3 +8,4 @@ logs/
 .idea/
 *.user
 .DS_Store
+.e2e/

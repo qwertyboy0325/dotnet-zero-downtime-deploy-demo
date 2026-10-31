@@ -23,9 +23,13 @@ app.MapGet("/", async () =>
 });
 
 // LB 的主動健康檢查會打這裡；關機中回 503，LB 就不會再送新請求過來
+#if SIMULATE_BROKEN
+app.MapGet("/health", () => Results.StatusCode(StatusCodes.Status500InternalServerError)); // e2e 用來驗證自動回滾
+#else
 app.MapGet("/health", () => stopping
     ? Results.StatusCode(StatusCodes.Status503ServiceUnavailable)
     : Results.Ok(new { status = "ok", version, pid }));
+#endif
 
 // 優雅關機：跨平台（Windows 上沒有 SIGTERM 可送給 console 程式）
 app.MapPost("/admin/shutdown", (HttpContext ctx) =>

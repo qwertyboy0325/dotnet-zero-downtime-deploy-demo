@@ -1,0 +1,52 @@
+# CD：推 tag（例如 v1.2.0）或手動觸發 → 先跑 CI → 在目標 Windows 主機上滾動更新
+#
+# 啟用前要先設定（README「完全自動化」一節有步驟）：
+#   1. 目標主機安裝 self-hosted runner，加上 label `zero-downtime-demo`
+#   2. Repository variables：DEPLOY_ENABLED=true、DEPLOY_ROOT=D:\apps\zero-downtime-demo
+#   3. （建議）建立 environment `production` 並設定 required reviewers，部署前要人按核准
+name: Deploy
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '要部署的版本（填已部署過的版本 = 回滾，不會重新編譯）'
+        required: true
+
+# 同一時間只允許一個部署，後來的排隊，不取消進行中的
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: test
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: [self-hosted, windows, zero-downtime-demo]
+    environment: production
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Rolling deploy
+        shell: pwsh
+        env:
+          VERSION: ${{ inputs.version || github.ref_name }}
+          DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT }}
+          # runner 在 job 結束時會殺掉 job 啟動的所有程序；清掉這個值，實例才會留著繼續跑
+          RUNNER_TRACKING_ID: ''
+        run: |
+          $lbPid = Join-Path $env:DEPLOY_ROOT 'run\lb.pid'
+          $lbAlive = (Test-Path $lbPid) -and (Get-Process -Id ([int](Get-Content $lbPid)) -ErrorAction SilentlyContinue)
+          if ($lbAlive) {
+            ./scripts/deploy.ps1 -Version $env:VERSION   # 失敗時腳本會自動回滾並 exit 1
+          } else {
+            Write-Host '第一次部署：啟動 LB 與實例'
+            ./scripts/start.ps1 -Version $env:VERSION
+          }
+          exit $LASTEXITCODE

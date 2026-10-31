@@ -1,0 +1,40 @@
+# CI：每次 push / PR 都在 Linux 和 Windows 上跑端對端測試
+#   壓測進行中 → 部署 v2 → 部署壞版本（自動回滾）→ 回滾 v1，全程 0 個失敗請求才算過
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call: # 給 deploy.yml 在部署前先跑一次
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: E2E (bash)
+        if: runner.os != 'Windows'
+        run: ./scripts/e2e.sh
+
+      - name: E2E (PowerShell)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/e2e.ps1
+
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-logs-${{ matrix.os }}
+          path: .e2e/logs/

@@ -19,6 +19,8 @@
 | `src/LoadTester` | 壓測工具，持續送請求並統計失敗數，用來證明部署過程沒有中斷 |
 | `scripts/*.ps1` | Windows 用的啟動 / 部署 / 停止腳本 |
 | `scripts/*.sh` | macOS / Linux 用的同一套腳本 |
+| `scripts/e2e.*` | 端對端測試：壓測中部署、自動回滾、手動回滾，0 失敗才算通過 |
+| `.github/workflows/` | `ci.yml`（每次 push 跑 e2e）、`deploy.yml`（推 tag 自動部署） |
 
 ## 執行方式（Windows）
 
@@ -58,6 +60,38 @@ Windows 上正在被載入的 DLL 不能覆寫。這套流程**從來不覆蓋�
 ```
 v1 → v2 → 回滾 v1，總共 30 秒：成功 3381，失敗 0，版本分佈 v1=2776, v2=605
 ```
+
+## 完全自動化（GitHub Actions）
+
+```
+push / PR ──▶ CI (ci.yml)：Linux + Windows 各跑一次 e2e
+                 壓測中：部署 v2 → 部署壞版本（應自動回滾）→ 回滾 v1，0 失敗才通過
+
+git tag v1.2.0 && git push --tags
+        └──▶ Deploy (deploy.yml)：先跑 CI → 人工核准（production environment）
+                 → 目標主機上的 self-hosted runner 執行 deploy.ps1 滾動更新
+                 → 新版健康檢查失敗就自動回滾該台，workflow 標示失敗
+```
+
+**自動回滾**：`deploy` 腳本在新版 `/health` 失敗時，會把那一台換回原本的版本，加回 LB 並中止部署（exit 1）。後面的機器不會再被更新。
+
+**本機跑 e2e**：
+
+```bash
+./scripts/e2e.sh        # macOS / Linux
+.\scripts\e2e.ps1       # Windows（另外會示範執行中的 DLL 確實被鎖住、無法覆寫）
+```
+
+### 啟用自動部署（一次性設定）
+
+1. 在目標 Windows 主機安裝 [self-hosted runner](https://docs.github.com/actions/hosting-your-own-runners)，加上 label `zero-downtime-demo`，並裝好 .NET 8 SDK。
+2. Repo → Settings → Secrets and variables → Actions → **Variables**：
+   - `DEPLOY_ENABLED` = `true`（沒設的話 deploy job 會直接跳過，tag push 不會卡住）
+   - `DEPLOY_ROOT` = `D:\apps\zero-downtime-demo`。**必須放在 runner 工作區外面**，否則下次 checkout 會清掉正在執行的 `releases\`。
+3. （建議）Settings → Environments 建立 `production`，設定 required reviewers，部署前要有人核准。
+4. 之後只要推 tag 就會部署；要回滾就到 Actions → Deploy → Run workflow，填舊版本號（例如 `v1.1.0`）。
+
+> runner 在 job 結束時會殺掉該 job 啟動的程序，所以 workflow 把 `RUNNER_TRACKING_ID` 設成空字串，讓實例繼續存活。正式環境更穩的做法是把實例註冊成 Windows Service（例如用 `sc.exe` 或 NSSM），讓 deploy 腳本改成切換 service 的 binPath。
 
 ## 搬到正式環境時要注意
 

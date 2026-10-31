@@ -6,5 +6,7 @@
     <!-- 版本號編譯進 DLL，部署時用 -p:InformationalVersion=v2 覆寫 -->
     <InformationalVersion>v1</InformationalVersion>
     <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
+    <!-- -p:SimulateBrokenHealth=true 會做出一個健康檢查永遠失敗的版本（測試自動回滾用） -->
+    <DefineConstants Condition="'$(SimulateBrokenHealth)' == 'true'">$(DefineConstants);SIMULATE_BROKEN</DefineConstants>
   </PropertyGroup>
 </Project>
