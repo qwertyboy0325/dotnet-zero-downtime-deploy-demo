@@ -15,9 +15,9 @@ function Log($msg) { Write-Host "[$(Get-Date -Format HH:mm:ss)] $msg" }
 function Publish-App($v) {
     if (Test-Path "$D\releases\$v") { Log "releases\$v 已存在，直接使用（回滾也走這條）"; return }
     Log "發佈 $v → releases\$v"
-    $extra = if ($env:PUBLISH_ARGS) { $env:PUBLISH_ARGS -split ' ' } else { @() }
-    dotnet publish "$Src\src\MyApp" -c Release -o "$D\releases\$v" -p:InformationalVersion=$v @extra --nologo -v q | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "publish 失敗" }
+    $extra = @(if ($env:PUBLISH_ARGS) { $env:PUBLISH_ARGS -split ' ' })
+    $out = dotnet publish "$Src\src\MyApp" -c Release -o "$D\releases\$v" "-p:InformationalVersion=$v" @extra --nologo -v q 2>&1
+    if ($LASTEXITCODE -ne 0) { $out | Write-Host; throw "publish 失敗" }
 }
 
 function Test-Healthy($port) {
