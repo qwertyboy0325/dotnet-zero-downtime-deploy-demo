@@ -1,5 +1,6 @@
-# CI：每次 push / PR 都在 Linux 和 Windows 上跑端對端測試
-#   壓測進行中 → 部署 v2 → 部署壞版本（自動回滾）→ 回滾 v1，全程 0 個失敗請求才算過
+# CI：每次 push / PR 都在 Linux 和 Windows 上跑
+#   migration-safety：DB migration 的 N-1 相容性測試（expand/contract 與經典錯誤）
+#   e2e：壓測進行中 → 部署 v2 → 部署壞版本（自動回滾）→ 回滾 v1，全程 0 個失敗請求才算過
 name: CI
 
 on:
@@ -10,7 +11,25 @@ on:
   workflow_call: # 給 deploy.yml 在部署前先跑一次
 
 jobs:
+  migration-safety:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      # detailed 會印出每個部署計畫的步驟和抓到的問題，直接在 CI log 裡就能學
+      - name: Migration safety tests
+        run: dotnet test tests/MigrationSafety.Tests --logger "console;verbosity=detailed"
+
   e2e:
+    needs: migration-safety # migration 不相容就沒必要再跑部署測試
     strategy:
       fail-fast: false
       matrix:

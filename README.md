@@ -34,6 +34,7 @@
 | `scripts/*.ps1` | Windows 用的啟動 / 部署 / 停止腳本 |
 | `scripts/*.sh` | macOS / Linux 用的同一套腳本 |
 | `scripts/e2e.*` | 端對端測試：壓測中部署、自動回滾、手動回滾，0 失敗才算通過 |
+| `tests/MigrationSafety.Tests` | DB migration 相容性測試：用測試示範 expand/contract 和經典錯誤 |
 | `.github/workflows/` | `ci.yml`（每次 push 跑 e2e）、`deploy.yml`（推 tag 自動部署） |
 
 ## 執行方式
@@ -85,8 +86,9 @@ GitHub Actions 上的 e2e（.NET 8，20 個併發，60 秒內依序部署 v2 →
 ## 完全自動化（GitHub Actions）
 
 ```
-push / PR ──▶ CI (ci.yml)：Linux + Windows 各跑一次 e2e
-                 壓測中：部署 v2 → 部署壞版本（應自動回滾）→ 回滾 v1，0 失敗才通過
+push / PR ──▶ CI (ci.yml)：Linux + Windows 各跑一次
+                 1. migration 相容性測試（見下方「資料庫 Migration」）
+                 2. e2e，壓測中：部署 v2 → 部署壞版本（應自動回滾）→ 回滾 v1，0 失敗才通過
 
 git tag v1.2.0 && git push --tags
         └──▶ Deploy (deploy.yml)：先跑 CI → 人工核准（production environment）
@@ -116,11 +118,77 @@ git tag v1.2.0 && git push --tags
 >
 > `deploy.yml` 目前沒有在真正的 self-hosted runner 上跑過；CI 驗證的是它呼叫的同一套 `deploy.ps1`。
 
+## 資料庫 Migration：用測試學相容性
+
+程式可以一台一台換，**資料庫卻只有一份**。滾動更新期間 v1 和 v2 同時連同一個 DB，回滾時舊版也要跑在新 schema 上。所以每個 migration 都必須**同時相容線上版本和回滾目標**。
+
+`tests/MigrationSafety.Tests` 用可以實際執行的測試來說明這件事。情境是「把 `Customers.Name` 改名成 `FullName`」：
+
+- [`AppVersions.cs`](tests/MigrationSafety.Tests/AppVersions.cs)：V1～V4 四個程式版本，各自有自己的 EF Core model，就像線上同時跑著不同版本的 DLL。
+- [`Migrations.cs`](tests/MigrationSafety.Tests/Migrations.cs)：M1～M5 每一步的 SQL，附上 SQL Server 的對照寫法。
+- [`RolloutSimulator.cs`](tests/MigrationSafety.Tests/RolloutSimulator.cs)：照部署計畫一步一步執行。每跑完一個 migration 或部署，就讓「線上版本」和「回滾目標」實際讀寫一次，並檢查有沒有讀到空值。
+
+### 正確做法：Expand / Contract
+
+| 步驟 | 內容 | 為什麼安全 |
+|---|---|---|
+| M2 | 新增 `FullName`，**允許 NULL** | V1 的 INSERT 不知道這個欄位，也不會失敗 |
+| V2 | 兩個欄位都寫，仍讀 `Name` | 回滾到 V1 也看得到資料 |
+| M3 | 回填舊資料 | 要在只寫 `Name` 的 V1 全部下線後才做 |
+| V3 | 改讀 `FullName`，仍然雙寫 | 回滾到 V2 也沒問題 |
+| M4 | `Name` 改成允許 NULL | V4 不寫 `Name` 了，不放寬的話 INSERT 會失敗 |
+| V4 | 只寫 `FullName` | — |
+| M5 | **最後才** DROP `Name` | 要等回滾窗口過了，確定不會再回到 V3 |
+
+### 每個測試教一件事
+
+| 測試 | 學到什麼 |
+|---|---|
+| `Safe_expand_contract_plan_keeps_every_version_working` | 上面的計畫，每一步 0 個問題 |
+| `Bad_renaming_column_in_one_step_breaks_the_running_version` | 直接 `RENAME COLUMN` / `sp_rename`，線上的 V1 當場壞掉 |
+| `Bad_expand_and_contract_in_the_same_release_breaks_the_running_version` | 新增和刪除放在同一次發佈，舊版來不及下線 |
+| `Bad_switching_reads_without_backfill_loses_old_rows` | 忘了回填：**不會報錯**，但舊資料的名字變成空的 |
+| `Bad_stopping_writes_while_old_column_is_still_NOT_NULL_breaks_inserts` | 停寫舊欄位之前，沒先把它改成允許 NULL |
+| `Bad_skipping_the_read_switch_release_makes_rollback_lose_data` | 跳過「改讀新欄位」那一版，回滾後看不到新版寫入的資料 |
+| `Bad_dropping_column_inside_the_rollback_window_makes_rollback_impossible` | 還可能回滾時就 DROP，回滾目標直接壞掉 |
+| `Bad_old_version_silently_reads_an_enum_value_it_does_not_know` | 新增 enum 值：舊版**不會 throw**，卻默默走錯邏輯 |
+| `Safe_ship_read_support_for_the_new_value_before_any_version_writes_it` | enum 也要 expand/contract：先發「認得但不寫」的版本 |
+
+`Bad_` 開頭的測試是「**預期會抓到問題**」的測試。它們通過，代表這種錯誤確實攔得住。
+
+```bash
+dotnet test tests/MigrationSafety.Tests --logger "console;verbosity=detailed"
+```
+
+`detailed` 會印出每個計畫的步驟和抓到的問題，例如：
+
+```
+ deploy   V4（V2 與 V4 同時在線）
+   ✗ [部署 V4] 回滾目標 V2 讀到 1 筆空值（資料遺失或沒有 backfill）
+```
+
+CI 每次 push 都會在 Linux 和 Windows 上跑這組測試。migration 不相容的話，就不會繼續跑部署的 e2e。
+
+### 套用到真實專案
+
+這裡為了好讀，把四個版本放在同一個專案裡。真實專案常見的做法是：
+
+1. CI checkout **上一個 release tag** 的程式
+2. 對測試 DB 套用**這次 PR 的 migration**
+3. 用上一版的整合測試跑一次。失敗就代表這個 migration 會讓滾動更新或回滾出事
+
+另外幾點這組測試沒辦法示範，但同樣重要：
+
+- **鎖表**：SQLite 看不出鎖定問題。在 SQL Server / PostgreSQL 上，改型別或建索引沒加 `ONLINE` 會鎖住大表；回填要分批做。
+- **不要在程式啟動時跑 migration**（`Database.Migrate()`）。多台同時啟動會搶著跑。改成部署前的獨立步驟，例如 `dotnet ef migrations script --idempotent` 或 migrations bundle。
+- **權限**：程式的 DB 帳號不該有 `ALTER` / `DROP` 權限。migration 用另一個帳號，只在 CI/CD 的 migration 步驟使用。
+- **Down migration 通常會丟資料**，實務上多半採用 roll forward（再發一版修正）。
+
 ## 搬到正式環境時要注意
 
 - **LB 換成現成產品**：IIS ARR、Nginx、HAProxy、Azure Application Gateway / AWS ALB 都有「摘除 → 等連線處理完 → 加回」的功能，部署流程完全相同，只是 API 換成它們的。
 - **容量**：一次摘除一台時，剩下的機器要扛得住全部流量。如果扛不住，可以改成「先在新的 port 起新版，加入 LB 之後再摘除舊版」（多一台就是藍綠部署）。
-- **相容性**：滾動更新期間，新舊版本會同時在線，DB schema 和 API 都要向下相容（先加欄位、後刪欄位）。
+- **相容性**：滾動更新期間，新舊版本會同時在線，DB schema 和 API 都要向下相容（見上方「資料庫 Migration」）。
 - **Session**：不要把 session 存在程序記憶體裡（改用 Redis 或分散式快取），否則切換時使用者會被登出。
 - **權限**：`/admin/shutdown` 只允許 loopback 呼叫，LB 的 `/lb/*` 在正式環境也要加上驗證，或只綁定內網。
 
