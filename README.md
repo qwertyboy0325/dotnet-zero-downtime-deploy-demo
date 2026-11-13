@@ -1,5 +1,19 @@
 # 負載平衡 + 滾動更新：不停站部署 C# 程式的示範
 
+**繁體中文** | [English](README.en.md)
+
+[![CI](https://github.com/qwertyboy0325/dotnet-zero-downtime-deploy-demo/actions/workflows/ci.yml/badge.svg)](https://github.com/qwertyboy0325/dotnet-zero-downtime-deploy-demo/actions/workflows/ci.yml)
+
+## 為什麼有這個專案
+
+這是為了一位認識的朋友做的示範。他剛好在問：「C# 要不停站發佈，但 DLL 被正在執行的程式鎖住、沒辦法覆蓋，該怎麼辦？」與其只用文字解釋，不如做一個能實際跑起來的小專案，直接看到整個過程。
+
+所以這個 repo 的目的是**說明觀念**，不是拿來直接上線的框架。程式刻意寫得精簡，方便閱讀；要搬到正式環境，請看最後一節的注意事項。
+
+**一句話結論**：不要覆蓋正在執行的 DLL。每個版本發佈到自己的目錄，再透過負載平衡器一台一台換過去。
+
+## 架構
+
 ```
              ┌──────────────┐
   使用者 ──▶ │ LoadBalancer │  :8080  (YARP，含 /lb/drain、/lb/enable 管理 API)
@@ -22,7 +36,9 @@
 | `scripts/e2e.*` | 端對端測試：壓測中部署、自動回滾、手動回滾，0 失敗才算通過 |
 | `.github/workflows/` | `ci.yml`（每次 push 跑 e2e）、`deploy.yml`（推 tag 自動部署） |
 
-## 執行方式（Windows）
+## 執行方式
+
+需要 [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)。
 
 ```powershell
 .\scripts\start.ps1                    # 發佈 v1，起兩個實例和 LB
@@ -53,13 +69,18 @@ Windows 上正在被載入的 DLL 不能覆寫。這套流程**從來不覆蓋�
 - 新版發佈到 `releases/v2/`，舊版程序繼續鎖著 `releases/v1/`，兩者互不干擾。
 - 舊程序結束之後，`releases/v1/` 的鎖自然解除，可以清掉，也可以保留作為回滾用。
 
-反例：如果直接 `dotnet publish -o 正在執行的目錄`，Windows 會報 *"The process cannot access the file ... because it is being used by another process"*。
+反例：如果直接 `dotnet publish -o 正在執行的目錄`，Windows 會報 *"The process cannot access the file ... because it is being used by another process"*。`e2e.ps1` 會在 Windows 上實際示範這個錯誤。
 
-## 實測結果（macOS，.NET 8，20 個併發）
+## 實測結果
 
-```
-v1 → v2 → 回滾 v1，總共 30 秒：成功 3381，失敗 0，版本分佈 v1=2776, v2=605
-```
+GitHub Actions 上的 e2e（.NET 8，20 個併發，60 秒內依序部署 v2 → 部署壞版本並自動回滾 → 回滾 v1）：
+
+| 平台 | 成功 | 失敗 | 版本分佈 |
+|---|---|---|---|
+| ubuntu-latest | 6863 | 0 | v1=4860, v2=2003 |
+| windows-latest | 6583 | 0 | v1=4582, v2=2001 |
+
+壞掉的版本一個請求都沒有接到。
 
 ## 完全自動化（GitHub Actions）
 
@@ -92,6 +113,8 @@ git tag v1.2.0 && git push --tags
 4. 之後只要推 tag 就會部署；要回滾就到 Actions → Deploy → Run workflow，填舊版本號（例如 `v1.1.0`）。
 
 > runner 在 job 結束時會殺掉該 job 啟動的程序，所以 workflow 把 `RUNNER_TRACKING_ID` 設成空字串，讓實例繼續存活。正式環境更穩的做法是把實例註冊成 Windows Service（例如用 `sc.exe` 或 NSSM），讓 deploy 腳本改成切換 service 的 binPath。
+>
+> `deploy.yml` 目前沒有在真正的 self-hosted runner 上跑過；CI 驗證的是它呼叫的同一套 `deploy.ps1`。
 
 ## 搬到正式環境時要注意
 
@@ -100,3 +123,7 @@ git tag v1.2.0 && git push --tags
 - **相容性**：滾動更新期間，新舊版本會同時在線，DB schema 和 API 都要向下相容（先加欄位、後刪欄位）。
 - **Session**：不要把 session 存在程序記憶體裡（改用 Redis 或分散式快取），否則切換時使用者會被登出。
 - **權限**：`/admin/shutdown` 只允許 loopback 呼叫，LB 的 `/lb/*` 在正式環境也要加上驗證，或只綁定內網。
+
+## 授權
+
+[MIT](LICENSE)
